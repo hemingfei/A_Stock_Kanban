@@ -1,5 +1,6 @@
 """Data sources for stock quotes."""
 
+from typing import Optional
 from .base import BaseDataSource, Quote, KLineItem
 from .akshare import AkShareDataSource
 
