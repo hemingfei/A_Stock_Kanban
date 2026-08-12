@@ -41,9 +41,13 @@ const StockSearch = ({ open, onCancel, onSelect }: StockSearchProps) => {
         });
         if (response.data.success) {
           setResults(response.data.data || []);
+        } else {
+          setResults([]);
+          console.error('Search failed:', response.data.error);
         }
       } catch (error) {
         console.error('Search failed:', error);
+        setResults([]);
       } finally {
         setLoading(false);
       }
@@ -68,7 +72,7 @@ const StockSearch = ({ open, onCancel, onSelect }: StockSearchProps) => {
     >
       <Space direction="vertical" style={{ width: '100%' }}>
         <Input
-          placeholder="输入股票代码或名称搜索"
+          placeholder="输入股票代码或名称搜索（如：600519、贵州茅台、中际旭创）"
           prefix={<SearchOutlined />}
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
@@ -93,7 +97,7 @@ const StockSearch = ({ open, onCancel, onSelect }: StockSearchProps) => {
             </List.Item>
           )}
           locale={{
-            emptyText: keyword ? '未找到相关股票' : '请输入关键词搜索'
+            emptyText: keyword ? '未找到相关股票，请尝试其他关键词' : '请输入关键词搜索'
           }}
         />
       </Space>
