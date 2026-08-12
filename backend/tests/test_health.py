@@ -1,5 +1,5 @@
 """Tests for health check endpoints."""
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 
@@ -54,3 +54,29 @@ def test_openapi_docs_available(client):
     assert "openapi" in response.json()
     assert "info" in response.json()
     assert "paths" in response.json()
+
+
+def test_health_ready_with_database_error():
+    """Test readiness probe when database has an error."""
+    from main import app
+    from fastapi.testclient import TestClient
+    from app.database import get_session
+
+    # Create a mock session that raises an error
+    async def mock_get_session_error():
+        mock_session = MagicMock()
+        mock_execute = AsyncMock(side_effect=Exception("DB Connection Failed"))
+        mock_session.execute = mock_execute
+        yield mock_session
+
+    app.dependency_overrides[get_session] = mock_get_session_error
+    try:
+        client = TestClient(app)
+        response = client.get("/health/ready")
+        # Should still return 200 but with check status
+        assert response.status_code == 200
+        data = response.json()
+        assert "success" in data
+        assert "data" in data
+    finally:
+        app.dependency_overrides.pop(get_session, None)

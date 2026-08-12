@@ -168,3 +168,24 @@ async def test_board_user2(test_db, test_user2):
     await test_db.commit()
     await test_db.refresh(board)
     return board
+
+
+@pytest.fixture
+async def test_user_no_settings(test_db):
+    """Create a test user WITHOUT default settings (for testing settings creation)."""
+    hashed_password = get_password_hash("testpass123")
+    user = User(
+        username="testusernosettings",
+        password_hash=hashed_password
+    )
+    test_db.add(user)
+    await test_db.commit()
+    await test_db.refresh(user)
+    return user
+
+
+@pytest.fixture
+async def auth_headers_no_settings(test_user_no_settings):
+    """Get authentication headers for user without settings."""
+    access_token = create_access_token(data={"sub": test_user_no_settings.id})
+    return {"Authorization": f"Bearer {access_token}"}
