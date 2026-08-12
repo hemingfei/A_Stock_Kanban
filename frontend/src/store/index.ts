@@ -111,11 +111,15 @@ export const useBoardStore = create<BoardsStore>((set, get) => ({
   boards: [],
   isLoading: false,
 
-  setBoards: (boards) => set({ boards, isLoading: false }),
+  setBoards: (boards) =>
+    set({
+      boards: boards.map((b) => ({ ...b, stocks: b.stocks || [] })),
+      isLoading: false,
+    }),
 
   addBoard: (board) =>
     set((state) => ({
-      boards: [...state.boards, board],
+      boards: [...state.boards, { ...board, stocks: board.stocks || [] }],
     })),
 
   updateBoard: (id, data) =>
@@ -131,7 +135,7 @@ export const useBoardStore = create<BoardsStore>((set, get) => ({
   addStockToBoard: (boardId, stock) =>
     set((state) => ({
       boards: state.boards.map((b) =>
-        b.id === boardId ? { ...b, stocks: [...b.stocks, stock] } : b
+        b.id === boardId ? { ...b, stocks: [...(b.stocks || []), stock] } : b
       ),
     })),
 
@@ -139,7 +143,7 @@ export const useBoardStore = create<BoardsStore>((set, get) => ({
     set((state) => ({
       boards: state.boards.map((b) =>
         b.id === boardId
-          ? { ...b, stocks: b.stocks.filter((s) => s.id !== stockId) }
+          ? { ...b, stocks: (b.stocks || []).filter((s) => s.id !== stockId) }
           : b
       ),
     })),
@@ -178,12 +182,12 @@ export const useUIStore = create<UIStore>()(
 // Helper selectors
 export const useAllStockCodes = () => {
   return useBoardStore((state) =>
-    state.boards.flatMap((b) => b.stocks.map((s) => s.code))
+    state.boards.flatMap((b) => (b.stocks || []).map((s) => s.code))
   )
 }
 
 export const useBoardQuotes = (boardId: number) => {
   const board = useBoardStore((state) => state.boards.find((b) => b.id === boardId))
   const getQuote = useQuoteStore((state) => state.getQuote)
-  return board?.stocks.map((stock) => getQuote(stock.code)).filter(Boolean) as Quote[]
+  return (board?.stocks || []).map((stock) => getQuote(stock.code)).filter(Boolean) as Quote[]
 }
