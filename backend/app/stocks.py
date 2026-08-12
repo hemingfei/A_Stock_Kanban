@@ -130,6 +130,50 @@ async def add_stock(
     )
 
 
+@router.put("/reorder", response_model=ApiResponse)
+async def reorder_stocks(
+    board_id: int,
+    reorder_data: StockReorderRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session)
+):
+    """Reorder stocks in a board."""
+    board = await get_board_for_user(board_id, current_user.id, db)
+    if not board:
+        return ApiResponse(
+            success=False,
+            error={
+                "code": "NOT_FOUND",
+                "message": "Board not found"
+            }
+        )
+
+    # Get all stocks in board
+    result = await db.execute(
+        select(Stock).where(Stock.board_id == board_id)
+    )
+    stocks = {s.id: s for s in result.scalars().all()}
+
+    # Update sort order
+    for index, stock_id in enumerate(reorder_data.stock_ids):
+        if stock_id in stocks:
+            stocks[stock_id].sort_order = index
+
+    await db.commit()
+
+    # Log audit event
+    await log_audit_event(
+        db, current_user.id, "stock_reorder", request,
+        resource_type="board", resource_id=board_id
+    )
+
+    return ApiResponse(
+        success=True,
+        data={"message": "Stocks reordered successfully"}
+    )
+
+
 @router.delete("/{stock_id}", response_model=ApiResponse)
 async def remove_stock(
     board_id: int,
@@ -179,50 +223,6 @@ async def remove_stock(
     return ApiResponse(
         success=True,
         data={"message": "Stock removed successfully"}
-    )
-
-
-@router.put("/reorder", response_model=ApiResponse)
-async def reorder_stocks(
-    board_id: int,
-    reorder_data: StockReorderRequest,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_session)
-):
-    """Reorder stocks in a board."""
-    board = await get_board_for_user(board_id, current_user.id, db)
-    if not board:
-        return ApiResponse(
-            success=False,
-            error={
-                "code": "NOT_FOUND",
-                "message": "Board not found"
-            }
-        )
-
-    # Get all stocks in board
-    result = await db.execute(
-        select(Stock).where(Stock.board_id == board_id)
-    )
-    stocks = {s.id: s for s in result.scalars().all()}
-
-    # Update sort order
-    for index, stock_id in enumerate(reorder_data.stock_ids):
-        if stock_id in stocks:
-            stocks[stock_id].sort_order = index
-
-    await db.commit()
-
-    # Log audit event
-    await log_audit_event(
-        db, current_user.id, "stock_reorder", request,
-        resource_type="board", resource_id=board_id
-    )
-
-    return ApiResponse(
-        success=True,
-        data={"message": "Stocks reordered successfully"}
     )
 
 

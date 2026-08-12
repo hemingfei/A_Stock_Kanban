@@ -40,6 +40,9 @@ def get_password_hash(password: str) -> str:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()
+    # Convert sub to string for JWT
+    if "sub" in to_encode and not isinstance(to_encode["sub"], str):
+        to_encode["sub"] = str(to_encode["sub"])
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
@@ -52,11 +55,14 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT refresh token."""
     to_encode = data.copy()
+    # Convert sub to string for JWT
+    if "sub" in to_encode and not isinstance(to_encode["sub"], str):
+        to_encode["sub"] = str(to_encode["sub"])
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(days=settings.jwt_refresh_token_expire_days)
-    to_encode.update({"exp": expire, "type": "refresh", "jti": f"{data.get('sub')}-{datetime.utcnow().timestamp()}"})
+    to_encode.update({"exp": expire, "type": "refresh", "jti": f"{to_encode.get('sub')}-{datetime.utcnow().timestamp()}"})
     encoded_jwt = jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
     return encoded_jwt
 
@@ -100,10 +106,12 @@ async def get_current_user(
 
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        user_id: int = payload.get("sub")
-        token_type: str = payload.get("type")
-        if user_id is None or token_type != "access":
+        user_id_str = payload.get("sub")
+        token_type = payload.get("type")
+        if user_id_str is None or token_type != "access":
             raise credentials_exception
+        # Convert back to int
+        user_id = int(user_id_str)
     except JWTError:
         raise credentials_exception
 
@@ -266,10 +274,11 @@ async def refresh_token(
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm]
         )
-        user_id: int = payload.get("sub")
-        token_type: str = payload.get("type")
-        if user_id is None or token_type != "refresh":
+        user_id_str = payload.get("sub")
+        token_type = payload.get("type")
+        if user_id_str is None or token_type != "refresh":
             raise credentials_exception
+        user_id = int(user_id_str)
     except JWTError:
         raise credentials_exception
 

@@ -81,6 +81,38 @@ async def create_board(
     )
 
 
+@router.put("/reorder", response_model=ApiResponse)
+async def reorder_boards(
+    reorder_data: BoardReorderRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session)
+):
+    """Reorder boards."""
+    # Get all user boards
+    result = await db.execute(
+        select(Board).where(Board.user_id == current_user.id)
+    )
+    boards = {b.id: b for b in result.scalars().all()}
+
+    # Update sort order
+    for index, board_id in enumerate(reorder_data.board_ids):
+        if board_id in boards:
+            boards[board_id].sort_order = index
+
+    await db.commit()
+
+    # Log audit event
+    await log_audit_event(
+        db, current_user.id, "board_reorder", request
+    )
+
+    return ApiResponse(
+        success=True,
+        data={"message": "Boards reordered successfully"}
+    )
+
+
 @router.get("/{board_id}", response_model=ApiResponse)
 async def get_board(
     board_id: int,
@@ -199,36 +231,4 @@ async def delete_board(
     return ApiResponse(
         success=True,
         data={"message": "Board deleted successfully"}
-    )
-
-
-@router.put("/reorder", response_model=ApiResponse)
-async def reorder_boards(
-    reorder_data: BoardReorderRequest,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_session)
-):
-    """Reorder boards."""
-    # Get all user boards
-    result = await db.execute(
-        select(Board).where(Board.user_id == current_user.id)
-    )
-    boards = {b.id: b for b in result.scalars().all()}
-
-    # Update sort order
-    for index, board_id in enumerate(reorder_data.board_ids):
-        if board_id in boards:
-            boards[board_id].sort_order = index
-
-    await db.commit()
-
-    # Log audit event
-    await log_audit_event(
-        db, current_user.id, "board_reorder", request
-    )
-
-    return ApiResponse(
-        success=True,
-        data={"message": "Boards reordered successfully"}
     )
