@@ -735,7 +735,7 @@ class AkShareDataSource(BaseDataSource):
     async def get_quote(self, code: str) -> Optional[Quote]:
         """Get quote for a single stock."""
         if not self.circuit_breaker.can_call():
-            logger.warning(f"Circuit breaker open for {self.name}, returning cached/mock data")
+            logger.warning(f"Circuit breaker open for {self.name}, using mock data")
             return self._get_mock_quote(code)
 
         try:
@@ -745,18 +745,21 @@ class AkShareDataSource(BaseDataSource):
                     quote = await self._get_real_quote(code)
                     if quote:
                         self.circuit_breaker.record_success()
+                        logger.debug(f"Using REAL quote for {code}")
                         return quote
                 except Exception as e:
                     logger.warning(f"Failed to get real quote for {code}: {e}, falling back to mock")
 
             # Fall back to mock data (always succeeds)
             self.circuit_breaker.record_success()
+            logger.debug(f"Using MOCK quote for {code}")
             return self._get_mock_quote(code)
 
         except Exception as e:
             logger.error(f"Error getting quote from {self.name}: {e}")
             self.circuit_breaker.record_failure()
             # Return mock data as fallback
+            logger.debug(f"Using MOCK quote for {code} (fallback)")
             return self._get_mock_quote(code)
 
     async def _get_real_quote(self, code: str) -> Optional[Quote]:
@@ -916,30 +919,37 @@ class AkShareDataSource(BaseDataSource):
     async def get_quotes(self, codes: List[str]) -> Dict[str, Quote]:
         """Get quotes for multiple stocks."""
         if not self.circuit_breaker.can_call():
-            logger.warning(f"Circuit breaker open for {self.name}, returning cached/mock data")
+            logger.warning(f"Circuit breaker open for {self.name}, using mock data")
             return {code: self._get_mock_quote(code) for code in codes}
 
         try:
             if await self._check_akshare():
                 # Try to get real quotes
                 quotes = {}
+                real_count = 0
+                mock_count = 0
                 for code in codes:
                     try:
                         quote = await self._get_real_quote(code)
                         if quote:
                             quotes[code] = quote
+                            real_count += 1
                         else:
                             quotes[code] = self._get_mock_quote(code)
+                            mock_count += 1
                     except Exception as e:
                         logger.debug(f"Failed to get quote for {code}: {e}")
                         quotes[code] = self._get_mock_quote(code)
+                        mock_count += 1
 
                 if quotes:
                     self.circuit_breaker.record_success()
+                    logger.debug(f"Got {real_count} REAL, {mock_count} MOCK quotes")
                     return quotes
 
             # Fall back to mock data (always succeeds)
             self.circuit_breaker.record_success()
+            logger.debug(f"Using MOCK quotes for {len(codes)} stocks")
             return {code: self._get_mock_quote(code) for code in codes}
 
         except Exception as e:
