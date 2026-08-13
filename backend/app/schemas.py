@@ -277,7 +277,7 @@ class WSQuoteUpdate(WSMessage):
 class WSQuotesUpdate(WSMessage):
     """WebSocket batch quotes update message."""
     type: str = "quotes"
-    data: Dict[str, List[Quote]]
+    data: Dict[str, Any]
 
 
 class WSError(WSMessage):

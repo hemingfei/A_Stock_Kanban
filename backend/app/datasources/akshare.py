@@ -14,6 +14,11 @@ _stock_list_cache: Optional[List[Dict[str, str]]] = None
 _stock_list_cache_time: float = 0.0
 _STOCK_LIST_CACHE_DURATION = 86400  # 24 hours
 
+# Cache for spot market data (cached for 3 seconds)
+_spot_cache: Optional[Dict[str, Any]] = None
+_spot_cache_time: float = 0.0
+_SPOT_CACHE_DURATION = 3.0  # 3 seconds
+
 
 def _get_cache_key(data: str) -> str:
     """Generate cache key from data."""
@@ -731,56 +736,206 @@ class AkShareDataSource(BaseDataSource):
         """Get quote for a single stock."""
         if not self.circuit_breaker.can_call():
             logger.warning(f"Circuit breaker open for {self.name}, returning cached/mock data")
-            return MOCK_QUOTES.get(code)
+            return self._get_mock_quote(code)
 
         try:
-            # First try mock data for development
             if await self._check_akshare():
-                # TODO: Implement real AkShare integration
-                quote = self._get_mock_quote(code)
-            else:
-                quote = self._get_mock_quote(code)
+                # Get real quote from AkShare
+                try:
+                    quote = await self._get_real_quote(code)
+                    if quote:
+                        self.circuit_breaker.record_success()
+                        return quote
+                except Exception as e:
+                    logger.warning(f"Failed to get real quote for {code}: {e}, falling back to mock")
 
-            if quote:
-                self.circuit_breaker.record_success()
-                return quote
-            else:
-                self.circuit_breaker.record_failure()
-                return None
+            # Fall back to mock data (always succeeds)
+            self.circuit_breaker.record_success()
+            return self._get_mock_quote(code)
 
         except Exception as e:
             logger.error(f"Error getting quote from {self.name}: {e}")
             self.circuit_breaker.record_failure()
             # Return mock data as fallback
-            return MOCK_QUOTES.get(code)
+            return self._get_mock_quote(code)
+
+    async def _get_real_quote(self, code: str) -> Optional[Quote]:
+        """Get real quote from AkShare."""
+        import akshare as ak
+        import asyncio
+        import pandas as pd
+
+        # Run blocking AkShare call in thread pool
+        loop = asyncio.get_event_loop()
+
+        # Get stock name
+        stock_name = code
+        try:
+            def fetch_name():
+                try:
+                    info_df = ak.stock_individual_info_em(symbol=code)
+                    name_row = info_df[info_df['item'] == '股票简称']
+                    if not name_row.empty:
+                        return name_row.iloc[0]['value']
+                except:
+                    pass
+                # Fallback: search in MOCK_STOCKS
+                for stock in MOCK_STOCKS:
+                    if stock['code'] == code:
+                        return stock['name']
+                return code
+
+            stock_name = await loop.run_in_executor(None, fetch_name)
+        except:
+            pass
+
+        # Try to get cached spot data first
+        spot_data = None
+        global _spot_cache, _spot_cache_time
+
+        if _spot_cache is not None and time.time() - _spot_cache_time < _SPOT_CACHE_DURATION:
+            spot_data = _spot_cache
+        else:
+            # Fetch new spot data
+            try:
+                def fetch_spot():
+                    try:
+                        return ak.stock_zh_a_spot_em()
+                    except:
+                        return None
+
+                new_spot = await loop.run_in_executor(None, fetch_spot)
+                if new_spot is not None and not new_spot.empty:
+                    _spot_cache = new_spot
+                    _spot_cache_time = time.time()
+                    spot_data = _spot_cache
+            except Exception as e:
+                logger.debug(f"Failed to fetch spot data: {e}")
+
+        # Try to find the stock in spot data
+        if spot_data is not None and not spot_data.empty:
+            try:
+                # Find the stock by code - compare as strings to avoid mismatch with leading zeros
+                stock_data = spot_data[spot_data['代码'].astype(str) == code]
+                if not stock_data.empty:
+                    quote_data = stock_data.iloc[0]
+
+                    # Extract data from the result
+                    price = float(quote_data.get('最新价', 0))
+                    pre_close = float(quote_data.get('昨收', 0))
+                    open_ = float(quote_data.get('今开', 0))
+                    high = float(quote_data.get('最高', 0))
+                    low = float(quote_data.get('最低', 0))
+                    volume = float(quote_data.get('成交量', 0))
+                    amount = float(quote_data.get('成交额', 0))
+                    change = float(quote_data.get('涨跌额', 0)) if pd.notna(quote_data.get('涨跌额')) else (price - pre_close if pre_close > 0 else 0)
+                    change_percent = float(quote_data.get('涨跌幅', 0)) if pd.notna(quote_data.get('涨跌幅')) else ((price - pre_close) / pre_close * 100 if pre_close > 0 else 0)
+
+                    # Use name from spot data if available
+                    name_from_spot = str(quote_data.get('名称', ''))
+                    if name_from_spot and name_from_spot != 'nan':
+                        stock_name = name_from_spot
+
+                    bid1 = float(quote_data.get('买一', 0)) if pd.notna(quote_data.get('买一')) else None
+                    bid1_volume = float(quote_data.get('买一量', 0)) if pd.notna(quote_data.get('买一量')) else None
+                    ask1 = float(quote_data.get('卖一', 0)) if pd.notna(quote_data.get('卖一')) else None
+                    ask1_volume = float(quote_data.get('卖一量', 0)) if pd.notna(quote_data.get('卖一量')) else None
+
+                    return Quote(
+                        code=code,
+                        name=stock_name,
+                        price=price,
+                        pre_close=pre_close,
+                        open=open_,
+                        high=high,
+                        low=low,
+                        volume=volume,
+                        amount=amount,
+                        change=change,
+                        change_percent=change_percent,
+                        bid1=bid1,
+                        bid1_volume=bid1_volume,
+                        ask1=ask1,
+                        ask1_volume=ask1_volume,
+                        timestamp=time.time()
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to parse spot data for {code}: {e}")
+
+        # Fall back to historical data if spot data not available
+        try:
+            def fetch_historical():
+                try:
+                    # Get recent historical data
+                    end_date = datetime.now().strftime("%Y%m%d")
+                    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+                    df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="")
+                    if not df.empty:
+                        latest = df.iloc[-1]
+                        pre_close_row = df.iloc[-2] if len(df) >= 2 else latest
+
+                        pre_close_val = float(pre_close_row.get('收盘', 0)) if len(df) >= 2 else float(latest.get('开盘', 0))
+                        close_val = float(latest.get('收盘', 0))
+
+                        return Quote(
+                            code=code,
+                            name=stock_name,
+                            price=close_val,
+                            pre_close=pre_close_val,
+                            open=float(latest.get('开盘', 0)),
+                            high=float(latest.get('最高', 0)),
+                            low=float(latest.get('最低', 0)),
+                            volume=float(latest.get('成交量', 0)),
+                            amount=float(latest.get('成交额', 0)),
+                            change=close_val - pre_close_val,
+                            change_percent=((close_val - pre_close_val) / pre_close_val * 100) if pre_close_val > 0 else 0,
+                            timestamp=time.time()
+                        )
+                except Exception as e:
+                    logger.debug(f"Historical fetch failed: {e}")
+                return None
+
+            quote = await loop.run_in_executor(None, fetch_historical)
+            if quote:
+                return quote
+        except Exception as e:
+            logger.debug(f"Alternative fetch also failed: {e}")
+
+        return None
 
     async def get_quotes(self, codes: List[str]) -> Dict[str, Quote]:
         """Get quotes for multiple stocks."""
         if not self.circuit_breaker.can_call():
             logger.warning(f"Circuit breaker open for {self.name}, returning cached/mock data")
-            return {code: MOCK_QUOTES[code] for code in codes if code in MOCK_QUOTES}
+            return {code: self._get_mock_quote(code) for code in codes}
 
         try:
             if await self._check_akshare():
-                # TODO: Implement real AkShare batch quote fetch
-                quotes = {code: self._get_mock_quote(code) for code in codes}
-            else:
-                quotes = {code: self._get_mock_quote(code) for code in codes}
+                # Try to get real quotes
+                quotes = {}
+                for code in codes:
+                    try:
+                        quote = await self._get_real_quote(code)
+                        if quote:
+                            quotes[code] = quote
+                        else:
+                            quotes[code] = self._get_mock_quote(code)
+                    except Exception as e:
+                        logger.debug(f"Failed to get quote for {code}: {e}")
+                        quotes[code] = self._get_mock_quote(code)
 
-            # Filter out None values
-            quotes = {k: v for k, v in quotes.items() if v is not None}
+                if quotes:
+                    self.circuit_breaker.record_success()
+                    return quotes
 
-            if quotes:
-                self.circuit_breaker.record_success()
-            else:
-                self.circuit_breaker.record_failure()
-
-            return quotes
+            # Fall back to mock data (always succeeds)
+            self.circuit_breaker.record_success()
+            return {code: self._get_mock_quote(code) for code in codes}
 
         except Exception as e:
             logger.error(f"Error getting quotes from {self.name}: {e}")
             self.circuit_breaker.record_failure()
-            return {code: MOCK_QUOTES[code] for code in codes if code in MOCK_QUOTES}
+            return {code: self._get_mock_quote(code) for code in codes}
 
     async def get_kline(self, code: str, period: str = "1d", count: int = 100) -> List[KLineItem]:
         """Get K-line data for a stock."""
@@ -790,18 +945,96 @@ class AkShareDataSource(BaseDataSource):
 
         try:
             if await self._check_akshare():
-                # TODO: Implement real AkShare K-line fetch
-                kline = self._generate_mock_kline(code, period, count)
-            else:
-                kline = self._generate_mock_kline(code, period, count)
+                # Try to get real K-line data
+                try:
+                    kline = await self._get_real_kline(code, period, count)
+                    if kline:
+                        self.circuit_breaker.record_success()
+                        return kline
+                except Exception as e:
+                    logger.warning(f"Failed to get real K-line for {code}: {e}, falling back to mock")
 
+            # Fall back to mock data (always succeeds)
             self.circuit_breaker.record_success()
-            return kline
+            return self._generate_mock_kline(code, period, count)
 
         except Exception as e:
             logger.error(f"Error getting K-line from {self.name}: {e}")
             self.circuit_breaker.record_failure()
             return self._generate_mock_kline(code, period, count)
+
+    async def _get_real_kline(self, code: str, period: str = "1d", count: int = 100) -> List[KLineItem]:
+        """Get real K-line data from AkShare."""
+        import akshare as ak
+        import asyncio
+        from datetime import datetime, timedelta
+
+        loop = asyncio.get_event_loop()
+
+        # Map period to AkShare parameters
+        ak_period = "daily"
+        if period == "1w":
+            ak_period = "weekly"
+        elif period == "1M":
+            ak_period = "monthly"
+
+        # Calculate start date (count days back)
+        end_date = datetime.now().strftime("%Y%m%d")
+        if period == "1d":
+            start_date = (datetime.now() - timedelta(days=count*2)).strftime("%Y%m%d")
+        elif period == "1w":
+            start_date = (datetime.now() - timedelta(weeks=count*2)).strftime("%Y%m%d")
+        else:  # monthly
+            start_date = (datetime.now() - timedelta(days=count*60)).strftime("%Y%m%d")
+
+        def fetch_kline():
+            try:
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period=ak_period,
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=""
+                )
+
+                if df.empty:
+                    return []
+
+                items = []
+                # Take latest 'count' items
+                for _, row in df.tail(count).iterrows():
+                    date_str = str(row.get('日期', ''))
+                    # Format date: YYYY-MM-DD
+                    if len(date_str) == 8:
+                        date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+                    open_ = float(row.get('开盘', 0))
+                    close = float(row.get('收盘', 0))
+                    high = float(row.get('最高', 0))
+                    low = float(row.get('最低', 0))
+                    volume = float(row.get('成交量', 0))
+                    amount = float(row.get('成交额', 0))
+                    change = float(row.get('涨跌额', 0)) if '涨跌额' in row else close - open_
+                    change_percent = float(row.get('涨跌幅', 0)) if '涨跌幅' in row else ((close - open_) / open_ * 100) if open_ > 0 else 0
+
+                    items.append(KLineItem(
+                        date=date_str,
+                        open=open_,
+                        high=high,
+                        low=low,
+                        close=close,
+                        volume=volume,
+                        amount=amount,
+                        change=change,
+                        change_percent=change_percent
+                    ))
+
+                return items
+            except Exception as e:
+                logger.debug(f"Failed to fetch K-line: {e}")
+                return []
+
+        return await loop.run_in_executor(None, fetch_kline)
 
     async def search_stock(self, keyword: str) -> List[Dict[str, str]]:
         """Search for stocks by keyword using AkShare."""
@@ -905,11 +1138,12 @@ class AkShareDataSource(BaseDataSource):
 
     def _get_mock_quote(self, code: str) -> Optional[Quote]:
         """Get mock quote data."""
+        import random
+        import copy
+
         if code in MOCK_QUOTES:
-            import random
             quote = MOCK_QUOTES[code]
             # Add some randomness to make it look real
-            import copy
             quote = copy.deepcopy(quote)
             variation = (random.random() - 0.5) * quote.price * 0.01
             quote.price += variation
@@ -917,7 +1151,46 @@ class AkShareDataSource(BaseDataSource):
             quote.change_percent = (quote.change / quote.pre_close) * 100
             quote.timestamp = time.time()
             return quote
-        return None
+
+        # Generate mock quote for any stock code
+        # Find stock name from MOCK_STOCKS if available
+        stock_name = "Unknown"
+        for stock in MOCK_STOCKS:
+            if stock["code"] == code:
+                stock_name = stock["name"]
+                break
+
+        # Generate a reasonable price based on code (deterministic but looks random)
+        import hashlib
+        hash_bytes = hashlib.md5(code.encode()).digest()
+        price_seed = int.from_bytes(hash_bytes[:4], 'little') % 1000
+        base_price = max(5.0, price_seed / 10)  # Price between 5 and 100
+
+        # Add some randomness
+        variation = (random.random() - 0.5) * base_price * 0.02
+        current_price = base_price + variation
+        pre_close = base_price * (1 + (random.random() - 0.5) * 0.03)
+        change = current_price - pre_close
+        change_percent = (change / pre_close) * 100 if pre_close > 0 else 0
+
+        return Quote(
+            code=code,
+            name=stock_name,
+            price=round(current_price, 2),
+            pre_close=round(pre_close, 2),
+            open=round(pre_close * (1 + (random.random() - 0.5) * 0.01), 2),
+            high=round(current_price * (1 + random.random() * 0.02), 2),
+            low=round(current_price * (1 - random.random() * 0.02), 2),
+            volume=random.randint(10000, 5000000),
+            amount=round(current_price * random.randint(10000, 5000000) / 1000, 2) * 1000,
+            change=round(change, 2),
+            change_percent=round(change_percent, 2),
+            bid1=round(current_price - 0.01, 2),
+            bid1_volume=random.randint(100, 10000),
+            ask1=round(current_price + 0.01, 2),
+            ask1_volume=random.randint(100, 10000),
+            timestamp=time.time()
+        )
 
     def _generate_mock_kline(self, code: str, period: str, count: int) -> List[KLineItem]:
         """Generate mock K-line data."""
