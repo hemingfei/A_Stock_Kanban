@@ -726,9 +726,9 @@ class AkShareDataSource(BaseDataSource):
             import akshare as ak
             self._akshare_available = True
             logger.info("AkShare is available")
-        except ImportError:
+        except ImportError as e:
             self._akshare_available = False
-            logger.warning("AkShare not available, using mock data")
+            logger.warning(f"AkShare not available ({e}), using mock data")
 
         return self._akshare_available
 
@@ -816,7 +816,14 @@ class AkShareDataSource(BaseDataSource):
         if spot_data is not None and not spot_data.empty:
             try:
                 # Find the stock by code - compare as strings to avoid mismatch with leading zeros
-                stock_data = spot_data[spot_data['代码'].astype(str) == code]
+                # Also try matching both with and without market prefix
+                code_str = str(code)
+                stock_data = spot_data[spot_data['代码'].astype(str) == code_str]
+                if stock_data.empty:
+                    # Try without sh/sz prefix if present
+                    if code_str.startswith('sh') or code_str.startswith('sz'):
+                        stock_data = spot_data[spot_data['代码'].astype(str) == code_str[2:]]
+
                 if not stock_data.empty:
                     quote_data = stock_data.iloc[0]
 
@@ -841,6 +848,7 @@ class AkShareDataSource(BaseDataSource):
                     ask1 = float(quote_data.get('卖一', 0)) if pd.notna(quote_data.get('卖一')) else None
                     ask1_volume = float(quote_data.get('卖一量', 0)) if pd.notna(quote_data.get('卖一量')) else None
 
+                    logger.debug(f"Got real quote for {code}: {stock_name} @ {price}")
                     return Quote(
                         code=code,
                         name=stock_name,
@@ -859,6 +867,8 @@ class AkShareDataSource(BaseDataSource):
                         ask1_volume=ask1_volume,
                         timestamp=time.time()
                     )
+                else:
+                    logger.debug(f"Stock {code} not found in spot data")
             except Exception as e:
                 logger.debug(f"Failed to parse spot data for {code}: {e}")
 
@@ -1160,32 +1170,38 @@ class AkShareDataSource(BaseDataSource):
                 stock_name = stock["name"]
                 break
 
-        # Generate a reasonable price based on code (deterministic but looks random)
+        # Generate a reasonable price based on code - use deterministic but reasonable values
+        # Most A-shares are between 5-100 yuan
         import hashlib
         hash_bytes = hashlib.md5(code.encode()).digest()
-        price_seed = int.from_bytes(hash_bytes[:4], 'little') % 1000
-        base_price = max(5.0, price_seed / 10)  # Price between 5 and 100
+        # Use a smaller range for more realistic prices
+        price_seed = int.from_bytes(hash_bytes[:2], 'little') % 900  # 0-899
+        base_price = 5.0 + (price_seed / 10.0)  # 5-95 yuan
 
-        # Add some randomness
-        variation = (random.random() - 0.5) * base_price * 0.02
+        # Add small randomness
+        variation = (random.random() - 0.5) * base_price * 0.005  # +/- 0.25%
         current_price = base_price + variation
-        pre_close = base_price * (1 + (random.random() - 0.5) * 0.03)
+        pre_close = base_price * (1 + (random.random() - 0.5) * 0.01)  # +/- 0.5%
         change = current_price - pre_close
         change_percent = (change / pre_close) * 100 if pre_close > 0 else 0
+
+        # Make sure we have valid, realistic looking prices
+        current_price = round(current_price, 2)
+        pre_close = round(pre_close, 2)
 
         return Quote(
             code=code,
             name=stock_name,
-            price=round(current_price, 2),
-            pre_close=round(pre_close, 2),
-            open=round(pre_close * (1 + (random.random() - 0.5) * 0.01), 2),
-            high=round(current_price * (1 + random.random() * 0.02), 2),
-            low=round(current_price * (1 - random.random() * 0.02), 2),
-            volume=random.randint(10000, 5000000),
-            amount=round(current_price * random.randint(10000, 5000000) / 1000, 2) * 1000,
+            price=current_price,
+            pre_close=pre_close,
+            open=round(pre_close * (1 + (random.random() - 0.5) * 0.005), 2),
+            high=round(max(current_price, pre_close) * (1 + random.random() * 0.01), 2),
+            low=round(min(current_price, pre_close) * (1 - random.random() * 0.01), 2),
+            volume=random.randint(100000, 50000000),
+            amount=round(current_price * random.randint(100000, 50000000), 2),
             change=round(change, 2),
             change_percent=round(change_percent, 2),
-            bid1=round(current_price - 0.01, 2),
+            bid1=round(current_price - 0.01, 2) if current_price > 0.01 else None,
             bid1_volume=random.randint(100, 10000),
             ask1=round(current_price + 0.01, 2),
             ask1_volume=random.randint(100, 10000),

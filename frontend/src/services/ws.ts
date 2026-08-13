@@ -80,8 +80,27 @@ class QuoteWebSocket {
 
     this.setStatus('connecting')
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws/quotes?token=${token}`
+    // Build WebSocket URL from config
+    let wsUrl = config.wsUrl
+    // Convert http/https to ws/wss if needed
+    if (wsUrl.startsWith('http://')) {
+      wsUrl = 'ws://' + wsUrl.slice(7)
+    } else if (wsUrl.startsWith('https://')) {
+      wsUrl = 'wss://' + wsUrl.slice(8)
+    }
+    // Ensure it starts with ws/wss
+    if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      wsUrl = `${protocol}//${wsUrl}`
+    }
+    // Add the endpoint
+    if (!wsUrl.includes('/ws/quotes')) {
+      wsUrl = `${wsUrl.replace(/\/$/, '')}/ws/quotes`
+    }
+    // Add token
+    wsUrl = `${wsUrl}?token=${token}`
+
+    console.log('Connecting to WebSocket:', wsUrl.replace(/\?token=.*/, '?token=***'))
 
     try {
       this.ws = new WebSocket(wsUrl)

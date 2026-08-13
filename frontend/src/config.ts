@@ -1,7 +1,9 @@
 // Configuration
+const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
 const config = {
-  apiUrl: import.meta.env.VITE_API_URL || 'http://localhost:8000',
-  wsUrl: import.meta.env.VITE_WS_URL || 'ws://localhost:8000',
+  apiUrl: apiBase,
+  wsUrl: apiBase, // Will be converted to ws/wss in ws.ts
 }
 
 export default config

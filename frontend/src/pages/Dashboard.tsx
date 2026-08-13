@@ -24,6 +24,7 @@ const Dashboard = () => {
   const removeStockFromBoard = useBoardStore((state) => state.removeStockFromBoard);
   const setLoading = useBoardStore((state) => state.setLoading);
   const updateQuotes = useQuoteStore((state) => state.updateQuotes);
+  const updateQuote = useQuoteStore((state) => state.updateQuote);
   const quotes = useQuoteStore((state) => state.quotes);
   const allCodes = useAllStockCodes();
 
@@ -41,6 +42,27 @@ const Dashboard = () => {
       const response = await api.get('/api/v1/boards');
       if (response.data.success) {
         setBoards(response.data.data || []);
+
+        // Immediately fetch initial quotes for all stocks
+        const allStockCodes = (response.data.data || []).flatMap((board: any) =>
+          (board.stocks || []).map((stock: any) => stock.code)
+        );
+
+        if (allStockCodes.length > 0) {
+          try {
+            const quotesResponse = await api.get('/api/v1/quotes', {
+              params: { codes: allStockCodes.join(',') }
+            });
+            if (quotesResponse.data.success && quotesResponse.data.data) {
+              // The API returns a dict { code: quote }
+              const quotesDict = quotesResponse.data.data;
+              const quotesArray = Object.values(quotesDict);
+              updateQuotes(quotesArray as any[]);
+            }
+          } catch (quoteError) {
+            console.error('Failed to fetch initial quotes:', quoteError);
+          }
+        }
       }
     } catch (error) {
       console.error('Failed to load boards:', error);
@@ -48,7 +70,7 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, [setBoards, setLoading]);
+  }, [setBoards, updateQuotes]);
 
   useEffect(() => {
     loadBoards();
@@ -135,6 +157,15 @@ const Dashboard = () => {
       const response = await api.post(`/api/v1/boards/${selectedBoardId}/stocks`, { code, name });
       if (response.data.success) {
         addStockToBoard(selectedBoardId, response.data.data);
+        // Immediately fetch the new stock's quote
+        try {
+          const quoteResponse = await api.get(`/api/v1/quotes/${code}`);
+          if (quoteResponse.data.success && quoteResponse.data.data) {
+            updateQuote(quoteResponse.data.data);
+          }
+        } catch (quoteError) {
+          console.error('Failed to fetch initial quote:', quoteError);
+        }
         message.success('股票添加成功');
       }
     } catch (error) {

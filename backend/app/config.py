@@ -39,10 +39,11 @@ class Settings(BaseSettings):
         except (json.JSONDecodeError, TypeError):
             return ["http://localhost:3000", "http://localhost:5173"]
 
-    class Config:
-        env_file = "../.env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = {
+        "env_file": "../.env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False
+    }
 
 
 @lru_cache()

@@ -59,6 +59,9 @@ logs/
 *.swp
 *.swo
 
+# Claude
+.claude/
+
 # Docker volumes
 data/
 backup/
