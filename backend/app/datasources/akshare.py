@@ -2,10 +2,23 @@ from typing import List, Dict, Any, Optional
 import asyncio
 import time
 import logging
+import hashlib
+from datetime import datetime, timedelta
 
 from .base import BaseDataSource, Quote, KLineItem
 
 logger = logging.getLogger(__name__)
+
+# Cache for stock list (cached for 1 day)
+_stock_list_cache: Optional[List[Dict[str, str]]] = None
+_stock_list_cache_time: float = 0.0
+_STOCK_LIST_CACHE_DURATION = 86400  # 24 hours
+
+
+def _get_cache_key(data: str) -> str:
+    """Generate cache key from data."""
+    return hashlib.md5(data.encode()).hexdigest()
+
 
 # Mock data for development (when AkShare is not available)
 MOCK_QUOTES = {
@@ -371,29 +384,324 @@ MOCK_QUOTES = {
     ),
 }
 
-# Stock search database for mock
+# Stock search database for mock (extended)
 MOCK_STOCKS = [
     {"code": "600519", "name": "贵州茅台", "market": "sh"},
     {"code": "000001", "name": "平安银行", "market": "sz"},
     {"code": "300750", "name": "宁德时代", "market": "sz"},
     {"code": "000858", "name": "五粮液", "market": "sz"},
-    {"code":"688981","name":"中芯国际","market":"sh"},
-    {"code":"601318","name":"中国平安","market":"sh"},
-    {"code":"000333","name":"美的集团","market":"sz"},
-    {"code":"600036","name":"招商银行","market":"sh"},
-    {"code":"002594","name":"比亚迪","market":"sz"},
-    {"code":"600900","name":"长江电力","market":"sh"},
-    {"code":"300308","name":"中际旭创","market":"sz"},
-    {"code":"600030","name":"中信证券","market":"sh"},
-    {"code":"000725","name":"京东方A","market":"sz"},
-    {"code":"600276","name":"恒瑞医药","market":"sh"},
-    {"code":"000651","name":"格力电器","market":"sz"},
-    {"code":"601899","name":"紫金矿业","market":"sh"},
-    {"code":"002415","name":"海康威视","market":"sz"},
-    {"code":"600887","name":"伊利股份","market":"sh"},
-    {"code":"000002","name":"万科A","market":"sz"},
-    {"code":"601328","name":"交通银行","market":"sh"},
+    {"code": "688981", "name": "中芯国际", "market": "sh"},
+    {"code": "601318", "name": "中国平安", "market": "sh"},
+    {"code": "000333", "name": "美的集团", "market": "sz"},
+    {"code": "600036", "name": "招商银行", "market": "sh"},
+    {"code": "002594", "name": "比亚迪", "market": "sz"},
+    {"code": "600900", "name": "长江电力", "market": "sh"},
+    {"code": "300308", "name": "中际旭创", "market": "sz"},
+    {"code": "600030", "name": "中信证券", "market": "sh"},
+    {"code": "000725", "name": "京东方A", "market": "sz"},
+    {"code": "600276", "name": "恒瑞医药", "market": "sh"},
+    {"code": "000651", "name": "格力电器", "market": "sz"},
+    {"code": "601899", "name": "紫金矿业", "market": "sh"},
+    {"code": "002415", "name": "海康威视", "market": "sz"},
+    {"code": "600887", "name": "伊利股份", "market": "sh"},
+    {"code": "000002", "name": "万科A", "market": "sz"},
+    {"code": "601328", "name": "交通银行", "market": "sh"},
+    {"code": "600000", "name": "浦发银行", "market": "sh"},
+    {"code": "600036", "name": "招商银行", "market": "sh"},
+    {"code": "600519", "name": "贵州茅台", "market": "sh"},
+    {"code": "600028", "name": "中国石化", "market": "sh"},
+    {"code": "600030", "name": "中信证券", "market": "sh"},
+    {"code": "601318", "name": "中国平安", "market": "sh"},
+    {"code": "600887", "name": "伊利股份", "market": "sh"},
+    {"code": "600276", "name": "恒瑞医药", "market": "sh"},
+    {"code": "000001", "name": "平安银行", "market": "sz"},
+    {"code": "000002", "name": "万科A", "market": "sz"},
+    {"code": "000858", "name": "五粮液", "market": "sz"},
+    {"code": "002415", "name": "海康威视", "market": "sz"},
+    {"code": "002594", "name": "比亚迪", "market": "sz"},
+    {"code": "300059", "name": "东方财富", "market": "sz"},
+    {"code": "300750", "name": "宁德时代", "market": "sz"},
+    {"code": "300308", "name": "中际旭创", "market": "sz"},
+    {"code": "688981", "name": "中芯国际", "market": "sh"},
+    {"code": "688012", "name": "中微公司", "market": "sh"},
+    {"code": "688111", "name": "金山办公", "market": "sh"},
+    {"code": "000651", "name": "格力电器", "market": "sz"},
+    {"code": "000333", "name": "美的集团", "market": "sz"},
+    {"code": "002475", "name": "立讯精密", "market": "sz"},
+    {"code": "300124", "name": "汇川技术", "market": "sz"},
+    {"code": "300760", "name": "迈瑞医疗", "market": "sz"},
+    {"code": "601888", "name": "中国中免", "market": "sh"},
+    {"code": "600309", "name": "万华化学", "market": "sh"},
+    {"code": "601012", "name": "隆基绿能", "market": "sh"},
+    {"code": "600436", "name": "片仔癀", "market": "sh"},
+    {"code": "600809", "name": "山西汾酒", "market": "sh"},
+    {"code": "000568", "name": "泸州老窖", "market": "sz"},
+    {"code": "000596", "name": "古井贡酒", "market": "sz"},
+    {"code": "000799", "name": "酒鬼酒", "market": "sz"},
+    {"code": "600779", "name": "水井坊", "market": "sh"},
+    {"code": "603369", "name": "今世缘", "market": "sh"},
+    {"code": "002304", "name": "洋河股份", "market": "sz"},
+    {"code": "600196", "name": "复星医药", "market": "sh"},
+    {"code": "600276", "name": "恒瑞医药", "market": "sh"},
+    {"code": "600195", "name": "中牧股份", "market": "sh"},
+    {"code": "300142", "name": "沃森生物", "market": "sz"},
+    {"code": "300347", "name": "泰格医药", "market": "sz"},
+    {"code": "002007", "name": "华兰生物", "market": "sz"},
+    {"code": "000661", "name": "长春高新", "market": "sz"},
+    {"code": "688278", "name": "特宝生物", "market": "sh"},
+    {"code": "300003", "name": "乐普医疗", "market": "sz"},
+    {"code": "600585", "name": "海螺水泥", "market": "sh"},
+    {"code": "000001", "name": "平安银行", "market": "sz"},
+    {"code": "601166", "name": "兴业银行", "market": "sh"},
+    {"code": "601328", "name": "交通银行", "market": "sh"},
+    {"code": "601939", "name": "建设银行", "market": "sh"},
+    {"code": "601398", "name": "工商银行", "market": "sh"},
+    {"code": "601288", "name": "农业银行", "market": "sh"},
+    {"code": "601988", "name": "中国银行", "market": "sh"},
+    {"code": "600016", "name": "民生银行", "market": "sh"},
+    {"code": "601169", "name": "北京银行", "market": "sh"},
+    {"code": "601229", "name": "上海银行", "market": "sh"},
+    {"code": "000001", "name": "平安银行", "market": "sz"},
+    {"code": "002142", "name": "宁波银行", "market": "sz"},
+    {"code": "000725", "name": "京东方A", "market": "sz"},
+    {"code": "000100", "name": "TCL科技", "market": "sz"},
+    {"code": "600703", "name": "三安光电", "market": "sh"},
+    {"code": "002456", "name": "欧菲光", "market": "sz"},
+    {"code": "300136", "name": "信维通信", "market": "sz"},
+    {"code": "002241", "name": "歌尔股份", "market": "sz"},
+    {"code": "002475", "name": "立讯精密", "market": "sz"},
+    {"code": "601138", "name": "工业富联", "market": "sh"},
+    {"code": "300750", "name": "宁德时代", "market": "sz"},
+    {"code": "300014", "name": "亿纬锂能", "market": "sz"},
+    {"code": "002812", "name": "恩捷股份", "market": "sz"},
+    {"code": "300450", "name": "先导智能", "market": "sz"},
+    {"code": "600585", "name": "海螺水泥", "market": "sh"},
+    {"code": "000401", "name": "冀东水泥", "market": "sz"},
+    {"code": "000898", "name": "鞍钢股份", "market": "sz"},
+    {"code": "000651", "name": "格力电器", "market": "sz"},
+    {"code": "000333", "name": "美的集团", "market": "sz"},
+    {"code": "600690", "name": "海尔智家", "market": "sh"},
+    {"code": "000538", "name": "云南白药", "market": "sz"},
+    {"code": "600887", "name": "伊利股份", "market": "sh"},
+    {"code": "600305", "name": "恒顺醋业", "market": "sh"},
+    {"code": "600882", "name": "妙可蓝多", "market": "sh"},
+    {"code": "002557", "name": "洽洽食品", "market": "sz"},
+    {"code": "002507", "name": "涪陵榨菜", "market": "sz"},
+    {"code": "603288", "name": "海天味业", "market": "sh"},
+    {"code": "000895", "name": "双汇发展", "market": "sz"},
+    {"code": "000860", "name": "顺鑫农业", "market": "sz"},
+    {"code": "600059", "name": "古越龙山", "market": "sh"},
+    {"code": "600600", "name": "青岛啤酒", "market": "sh"},
+    {"code": "600132", "name": "重庆啤酒", "market": "sh"},
+    {"code": "000729", "name": "燕京啤酒", "market": "sz"},
+    {"code": "002461", "name": "珠江啤酒", "market": "sz"},
+    {"code": "600597", "name": "光明乳业", "market": "sh"},
+    {"code": "600315", "name": "上海家化", "market": "sh"},
+    {"code": "000662", "name": "天夏智慧", "market": "sz"},
+    {"code": "002024", "name": "苏宁易购", "market": "sz"},
+    {"code": "000987", "name": "越秀金控", "market": "sz"},
+    {"code": "600638", "name": "新黄浦", "market": "sh"},
+    {"code": "000002", "name": "万科A", "market": "sz"},
+    {"code": "000006", "name": "深振业A", "market": "sz"},
+    {"code": "000042", "name": "中洲控股", "market": "sz"},
+    {"code": "600048", "name": "保利发展", "market": "sh"},
+    {"code": "600383", "name": "金地集团", "market": "sh"},
+    {"code": "001979", "name": "招商蛇口", "market": "sz"},
+    {"code": "601155", "name": "新城控股", "market": "sh"},
+    {"code": "600606", "name": "绿地控股", "market": "sh"},
+    {"code": "000656", "name": "金科股份", "market": "sz"},
+    {"code": "002146", "name": "荣盛发展", "market": "sz"},
+    {"code": "000069", "name": "华侨城A", "market": "sz"},
+    {"code": "601318", "name": "中国平安", "market": "sh"},
+    {"code": "601628", "name": "中国人寿", "market": "sh"},
+    {"code": "601336", "name": "新华保险", "market": "sh"},
+    {"code": "601601", "name": "中国太保", "market": "sh"},
+    {"code": "002673", "name": "西部证券", "market": "sz"},
+    {"code": "000776", "name": "广发证券", "market": "sz"},
+    {"code": "000166", "name": "申万宏源", "market": "sz"},
+    {"code": "601788", "name": "光大证券", "market": "sh"},
+    {"code": "600999", "name": "招商证券", "market": "sh"},
+    {"code": "600837", "name": "海通证券", "market": "sh"},
+    {"code": "601688", "name": "华泰证券", "market": "sh"},
+    {"code": "601211", "name": "国泰君安", "market": "sh"},
+    {"code": "002736", "name": "国信证券", "market": "sz"},
+    {"code": "601377", "name": "兴业证券", "market": "sh"},
+    {"code": "000783", "name": "长江证券", "market": "sz"},
+    {"code": "002500", "name": "山西证券", "market": "sz"},
+    {"code": "000728", "name": "国元证券", "market": "sz"},
+    {"code": "600109", "name": "国金证券", "market": "sh"},
+    {"code": "000712", "name": "锦龙股份", "market": "sz"},
+    {"code": "000686", "name": "东北证券", "market": "sz"},
+    {"code": "000750", "name": "国海证券", "market": "sz"},
+    {"code": "002608", "name": "国盛金控", "market": "sz"},
+    {"code": "600958", "name": "东方证券", "market": "sh"},
+    {"code": "600369", "name": "西南证券", "market": "sh"},
+    {"code": "600918", "name": "中泰证券", "market": "sh"},
+    {"code": "601901", "name": "方正证券", "market": "sh"},
+    {"code": "000987", "name": "越秀金控", "market": "sz"},
+    {"code": "300059", "name": "东方财富", "market": "sz"},
+    {"code": "300033", "name": "同花顺", "market": "sz"},
+    {"code": "300803", "name": "指南针", "market": "sz"},
+    {"code": "601519", "name": "大智慧", "market": "sh"},
+    {"code": "002657", "name": "中科金财", "market": "sz"},
+    {"code": "002197", "name": "证通电子", "market": "sz"},
+    {"code": "000046", "name": "泛海控股", "market": "sz"},
+    {"code": "000563", "name": "陕国投A", "market": "sz"},
+    {"code": "600816", "name": "ST安信", "market": "sh"},
+    {"code": "000415", "name": "渤海租赁", "market": "sz"},
+    {"code": "600643", "name": "爱建集团", "market": "sh"},
+    {"code": "600705", "name": "浙江东方", "market": "sh"},
+    {"code": "000539", "name": "粤电力A", "market": "sz"},
+    {"code": "600011", "name": "华能国际", "market": "sh"},
+    {"code": "600027", "name": "华电国际", "market": "sh"},
+    {"code": "600795", "name": "国电电力", "market": "sh"},
+    {"code": "600886", "name": "国投电力", "market": "sh"},
+    {"code": "600900", "name": "长江电力", "market": "sh"},
+    {"code": "000027", "name": "深圳能源", "market": "sz"},
+    {"code": "600021", "name": "上海电力", "market": "sh"},
+    {"code": "600578", "name": "京能电力", "market": "sh"},
+    {"code": "000534", "name": "万泽股份", "market": "sz"},
+    {"code": "000601", "name": "韶能股份", "market": "sz"},
+    {"code": "600396", "name": "华光股份", "market": "sh"},
+    {"code": "600475", "name": "华光环能", "market": "sh"},
+    {"code": "000899", "name": "赣能股份", "market": "sz"},
+    {"code": "000966", "name": "长源电力", "market": "sz"},
+    {"code": "001896", "name": "豫能控股", "market": "sz"},
+    {"code": "002039", "name": "黔源电力", "market": "sz"},
+    {"code": "002606", "name": "顺控发展", "market": "sz"},
+    {"code": "600101", "name": "明星电力", "market": "sh"},
+    {"code": "600116", "name": "三峡水利", "market": "sh"},
+    {"code": "600131", "name": "岷江水电", "market": "sh"},
+    {"code": "600236", "name": "桂冠电力", "market": "sh"},
+    {"code": "600292", "name": "中电环保", "market": "sh"},
+    {"code": "600310", "name": "西昌电力", "market": "sh"},
+    {"code": "600452", "name": "涪陵电力", "market": "sh"},
+    {"code": "600719", "name": "大连热电", "market": "sh"},
+    {"code": "600726", "name": "华电能源", "market": "sh"},
+    {"code": "600744", "name": "华银电力", "market": "sh"},
+    {"code": "600780", "name": "通宝能源", "market": "sh"},
+    {"code": "600863", "name": "内蒙华电", "market": "sh"},
+    {"code": "600868", "name": "梅雁吉祥", "market": "sh"},
+    {"code": "600979", "name": "广安爱众", "market": "sh"},
+    {"code": "600982", "name": "宁波热电", "market": "sh"},
+    {"code": "601016", "name": "节能风电", "market": "sh"},
+    {"code": "601222", "name": "林洋能源", "market": "sh"},
+    {"code": "601991", "name": "大唐发电", "market": "sh"},
+    {"code": "603693", "name": "江苏新能", "market": "sh"},
+    {"code": "300001", "name": "特锐德", "market": "sz"},
+    {"code": "300002", "name": "神州泰岳", "market": "sz"},
+    {"code": "300003", "name": "乐普医疗", "market": "sz"},
+    {"code": "300009", "name": "安科生物", "market": "sz"},
+    {"code": "300014", "name": "亿纬锂能", "market": "sz"},
+    {"code": "300015", "name": "爱尔眼科", "market": "sz"},
+    {"code": "300033", "name": "同花顺", "market": "sz"},
+    {"code": "300059", "name": "东方财富", "market": "sz"},
+    {"code": "300070", "name": "碧水源", "market": "sz"},
+    {"code": "300075", "name": "数字政通", "market": "sz"},
+    {"code": "300122", "name": "智飞生物", "market": "sz"},
+    {"code": "300124", "name": "汇川技术", "market": "sz"},
+    {"code": "300142", "name": "沃森生物", "market": "sz"},
+    {"code": "300308", "name": "中际旭创", "market": "sz"},
+    {"code": "300347", "name": "泰格医药", "market": "sz"},
+    {"code": "300433", "name": "蓝思科技", "market": "sz"},
+    {"code": "300450", "name": "先导智能", "market": "sz"},
+    {"code": "300750", "name": "宁德时代", "market": "sz"},
+    {"code": "300760", "name": "迈瑞医疗", "market": "sz"},
+    {"code": "688981", "name": "中芯国际", "market": "sh"},
+    {"code": "688012", "name": "中微公司", "market": "sh"},
+    {"code": "688111", "name": "金山办公", "market": "sh"},
+    {"code": "000001", "name": "平安银行", "market": "sz"},
+    {"code": "000002", "name": "万科A", "market": "sz"},
+    {"code": "000063", "name": "中兴通讯", "market": "sz"},
+    {"code": "000568", "name": "泸州老窖", "market": "sz"},
+    {"code": "000651", "name": "格力电器", "market": "sz"},
+    {"code": "000725", "name": "京东方A", "market": "sz"},
+    {"code": "000858", "name": "五粮液", "market": "sz"},
+    {"code": "000895", "name": "双汇发展", "market": "sz"},
+    {"code": "002007", "name": "华兰生物", "market": "sz"},
+    {"code": "002027", "name": "分众传媒", "market": "sz"},
+    {"code": "002129", "name": "TCL中环", "market": "sz"},
+    {"code": "002230", "name": "科大讯飞", "market": "sz"},
+    {"code": "002241", "name": "歌尔股份", "market": "sz"},
+    {"code": "002304", "name": "洋河股份", "market": "sz"},
+    {"code": "002311", "name": "海大集团", "market": "sz"},
+    {"code": "002415", "name": "海康威视", "market": "sz"},
+    {"code": "002460", "name": "赣锋锂业", "market": "sz"},
+    {"code": "002463", "name": "沪电股份", "market": "sz"},
+    {"code": "002475", "name": "立讯精密", "market": "sz"},
+    {"code": "002493", "name": "荣盛石化", "market": "sz"},
+    {"code": "002594", "name": "比亚迪", "market": "sz"},
+    {"code": "002714", "name": "牧原股份", "market": "sz"},
+    {"code": "002736", "name": "国信证券", "market": "sz"},
+    {"code": "002812", "name": "恩捷股份", "market": "sz"},
+    {"code": "002821", "name": "凯莱英", "market": "sz"},
+    {"code": "300014", "name": "亿纬锂能", "market": "sz"},
+    {"code": "300015", "name": "爱尔眼科", "market": "sz"},
+    {"code": "300059", "name": "东方财富", "market": "sz"},
+    {"code": "300122", "name": "智飞生物", "market": "sz"},
+    {"code": "300124", "name": "汇川技术", "market": "sz"},
+    {"code": "300136", "name": "信维通信", "market": "sz"},
+    {"code": "300142", "name": "沃森生物", "market": "sz"},
+    {"code": "300274", "name": "阳光电源", "market": "sz"},
+    {"code": "300347", "name": "泰格医药", "market": "sz"},
+    {"code": "300408", "name": "三环集团", "market": "sz"},
+    {"code": "300433", "name": "蓝思科技", "market": "sz"},
+    {"code": "300450", "name": "先导智能", "market": "sz"},
+    {"code": "300558", "name": "贝达药业", "market": "sz"},
+    {"code": "300618", "name": "寒锐钴业", "market": "sz"},
+    {"code": "300628", "name": "亿联网络", "market": "sz"},
+    {"code": "300676", "name": "汇顶科技", "market": "sz"},
+    {"code": "300699", "name": "光威复材", "market": "sz"},
+    {"code": "300750", "name": "宁德时代", "market": "sz"},
+    {"code": "300760", "name": "迈瑞医疗", "market": "sz"},
+    {"code": "600000", "name": "浦发银行", "market": "sh"},
+    {"code": "600028", "name": "中国石化", "market": "sh"},
+    {"code": "600030", "name": "中信证券", "market": "sh"},
+    {"code": "600036", "name": "招商银行", "market": "sh"},
+    {"code": "600276", "name": "恒瑞医药", "market": "sh"},
+    {"code": "600309", "name": "万华化学", "market": "sh"},
+    {"code": "600436", "name": "片仔癀", "market": "sh"},
+    {"code": "600519", "name": "贵州茅台", "market": "sh"},
+    {"code": "600547", "name": "山东黄金", "market": "sh"},
+    {"code": "600570", "name": "恒生电子", "market": "sh"},
+    {"code": "600585", "name": "海螺水泥", "market": "sh"},
+    {"code": "600690", "name": "海尔智家", "market": "sh"},
+    {"code": "600703", "name": "三安光电", "market": "sh"},
+    {"code": "600745", "name": "闻泰科技", "market": "sh"},
+    {"code": "600809", "name": "山西汾酒", "market": "sh"},
+    {"code": "600837", "name": "海通证券", "market": "sh"},
+    {"code": "600887", "name": "伊利股份", "market": "sh"},
+    {"code": "600900", "name": "长江电力", "market": "sh"},
+    {"code": "601012", "name": "隆基绿能", "market": "sh"},
+    {"code": "601111", "name": "中国国航", "market": "sh"},
+    {"code": "601138", "name": "工业富联", "market": "sh"},
+    {"code": "601166", "name": "兴业银行", "market": "sh"},
+    {"code": "601229", "name": "上海银行", "market": "sh"},
+    {"code": "601288", "name": "农业银行", "market": "sh"},
+    {"code": "601318", "name": "中国平安", "market": "sh"},
+    {"code": "601328", "name": "交通银行", "market": "sh"},
+    {"code": "601398", "name": "工商银行", "market": "sh"},
+    {"code": "601601", "name": "中国太保", "market": "sh"},
+    {"code": "601628", "name": "中国人寿", "market": "sh"},
+    {"code": "601688", "name": "华泰证券", "market": "sh"},
+    {"code": "601788", "name": "光大证券", "market": "sh"},
+    {"code": "601857", "name": "中国石油", "market": "sh"},
+    {"code": "601888", "name": "中国中免", "market": "sh"},
+    {"code": "601899", "name": "紫金矿业", "market": "sh"},
+    {"code": "601901", "name": "方正证券", "market": "sh"},
+    {"code": "601933", "name": "永辉超市", "market": "sh"},
+    {"code": "601939", "name": "建设银行", "market": "sh"},
+    {"code": "601985", "name": "中国核电", "market": "sh"},
+    {"code": "601988", "name": "中国银行", "market": "sh"},
+    {"code": "601998", "name": "中信银行", "market": "sh"},
+    {"code": "603160", "name": "汇顶科技", "market": "sh"},
+    {"code": "603259", "name": "药明康德", "market": "sh"},
+    {"code": "603288", "name": "海天味业", "market": "sh"},
+    {"code": "603501", "name": "韦尔股份", "market": "sh"},
+    {"code": "603899", "name": "晨光文具", "market": "sh"},
+    {"code": "603986", "name": "兆易创新", "market": "sh"},
 ]
+
 
 class AkShareDataSource(BaseDataSource):
     """AkShare data source implementation."""
@@ -496,24 +804,103 @@ class AkShareDataSource(BaseDataSource):
             return self._generate_mock_kline(code, period, count)
 
     async def search_stock(self, keyword: str) -> List[Dict[str, str]]:
-        """Search for stocks by keyword."""
+        """Search for stocks by keyword using AkShare."""
         if not self.circuit_breaker.can_call():
             logger.warning(f"Circuit breaker open for {self.name}, returning mock data")
             return self._search_mock_stocks(keyword)
 
         try:
             if await self._check_akshare():
-                # TODO: Implement real AkShare stock search
-                results = self._search_mock_stocks(keyword)
+                results = await self._search_akshare_stocks(keyword)
+                self.circuit_breaker.record_success()
+                return results
             else:
                 results = self._search_mock_stocks(keyword)
-
-            self.circuit_breaker.record_success()
-            return results
-
+                self.circuit_breaker.record_success()
+                return results
         except Exception as e:
             logger.error(f"Error searching stocks from {self.name}: {e}")
             self.circuit_breaker.record_failure()
+            return self._search_mock_stocks(keyword)
+
+    async def _fetch_stock_list(self) -> List[Dict[str, str]]:
+        """Fetch complete stock list from AkShare with caching."""
+        global _stock_list_cache, _stock_list_cache_time
+
+        # Check cache first
+        if (_stock_list_cache is not None and
+            time.time() - _stock_list_cache_time < _STOCK_LIST_CACHE_DURATION):
+            logger.debug("Using cached stock list")
+            return _stock_list_cache
+
+        try:
+            import akshare as ak
+
+            logger.info("Fetching stock list from AkShare...")
+
+            # Fetch list of stocks
+            try:
+                # This fetches all A-share stock info
+                stock_list_df = ak.stock_info_a_code_name()
+                stock_list = []
+                for _, row in stock_list_df.iterrows():
+                    code = str(row['code']).zfill(6)
+                    # Determine market based on code prefix
+                    if code.startswith('6'):
+                        market = 'sh'
+                    elif code.startswith('8') or code.startswith('4') or code.startswith('9'):
+                        # Skip B-share, N-share, etc.
+                        continue
+                    else:
+                        market = 'sz'
+                    stock_list.append({
+                        "code": code,
+                        "name": row['name'],
+                        "market": market
+                    })
+
+                if stock_list:
+                    _stock_list_cache = stock_list
+                    _stock_list_cache_time = time.time()
+                    logger.info(f"Cached {len(stock_list)} stocks from AkShare")
+                    return stock_list
+                else:
+                    logger.warning("No data from AkShare, using mock data")
+                    return MOCK_STOCKS
+            except Exception as e:
+                logger.warning(f"Failed to fetch stock list from AkShare: {e}, using mock data")
+                return MOCK_STOCKS
+
+        except ImportError:
+            logger.warning("AkShare not available, using mock data")
+            return MOCK_STOCKS
+        except Exception as e:
+            logger.error(f"Error fetching stock list from AkShare: {e}")
+            return MOCK_STOCKS
+
+    async def _search_akshare_stocks(self, keyword: str) -> List[Dict[str, str]]:
+        """Search stocks using AkShare data."""
+        try:
+            stock_list = await self._fetch_stock_list()
+            keyword_lower = keyword.lower()
+
+            results = []
+            for stock in stock_list:
+                if (keyword_lower in stock["code"].lower() or
+                    keyword_lower in stock["name"].lower()):
+                    results.append(stock)
+                    # Limit to 50 results for performance
+                    if len(results) >= 50:
+                        break
+
+            # If no results, fall back to mock data
+            if not results:
+                logger.debug(f"No results from AkShare search for '{keyword}', falling back to mock")
+                return self._search_mock_stocks(keyword)
+
+            return results
+        except Exception as e:
+            logger.error(f"Error in AkShare search: {e}")
             return self._search_mock_stocks(keyword)
 
     def _get_mock_quote(self, code: str) -> Optional[Quote]:
