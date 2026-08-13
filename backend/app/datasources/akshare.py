@@ -3,7 +3,7 @@ import asyncio
 import time
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 
 from .base import BaseDataSource, Quote, KLineItem
 
@@ -23,6 +23,23 @@ _SPOT_CACHE_DURATION = 3.0  # 3 seconds
 def _get_cache_key(data: str) -> str:
     """Generate cache key from data."""
     return hashlib.md5(data.encode()).hexdigest()
+
+
+def _is_transient_network_error(e: Exception) -> bool:
+    """Check if an error is a transient network issue that can be retried."""
+    error_str = str(e)
+    return any(
+        keyword in error_str
+        for keyword in [
+            'Connection aborted',
+            'RemoteDisconnected',
+            'Timeout',
+            'timed out',
+            'Connection reset',
+            'Network is unreachable',
+            'Connection refused',
+        ]
+    )
 
 
 # Mock data for development (when AkShare is not available)
@@ -748,7 +765,8 @@ class AkShareDataSource(BaseDataSource):
                         logger.debug(f"Using REAL quote for {code}")
                         return quote
                 except Exception as e:
-                    logger.warning(f"Failed to get real quote for {code}: {e}, falling back to mock")
+                    if not _is_transient_network_error(e):
+                        logger.warning(f"Failed to get real quote for {code}: {e}, falling back to mock")
 
             # Fall back to mock data (always succeeds)
             self.circuit_breaker.record_success()
@@ -780,7 +798,7 @@ class AkShareDataSource(BaseDataSource):
                     name_row = info_df[info_df['item'] == '股票简称']
                     if not name_row.empty:
                         return name_row.iloc[0]['value']
-                except:
+                except Exception:
                     pass
                 # Fallback: search in MOCK_STOCKS
                 for stock in MOCK_STOCKS:
@@ -789,7 +807,7 @@ class AkShareDataSource(BaseDataSource):
                 return code
 
             stock_name = await loop.run_in_executor(None, fetch_name)
-        except:
+        except Exception:
             pass
 
         # Try to get cached spot data first
@@ -804,7 +822,7 @@ class AkShareDataSource(BaseDataSource):
                 def fetch_spot():
                     try:
                         return ak.stock_zh_a_spot_em()
-                    except:
+                    except Exception:
                         return None
 
                 new_spot = await loop.run_in_executor(None, fetch_spot)
@@ -813,7 +831,8 @@ class AkShareDataSource(BaseDataSource):
                     _spot_cache_time = time.time()
                     spot_data = _spot_cache
             except Exception as e:
-                logger.debug(f"Failed to fetch spot data: {e}")
+                if not _is_transient_network_error(e):
+                    logger.debug(f"Failed to fetch spot data: {e}")
 
         # Try to find the stock in spot data
         if spot_data is not None and not spot_data.empty:
@@ -905,14 +924,17 @@ class AkShareDataSource(BaseDataSource):
                             timestamp=time.time()
                         )
                 except Exception as e:
-                    logger.debug(f"Historical fetch failed: {e}")
+                    # Only log non-transient errors to reduce noise
+                    if not _is_transient_network_error(e):
+                        logger.debug(f"Historical fetch failed for {code}: {e}")
                 return None
 
             quote = await loop.run_in_executor(None, fetch_historical)
             if quote:
                 return quote
         except Exception as e:
-            logger.debug(f"Alternative fetch also failed: {e}")
+            if not _is_transient_network_error(e):
+                logger.debug(f"Alternative fetch also failed: {e}")
 
         return None
 
@@ -972,7 +994,8 @@ class AkShareDataSource(BaseDataSource):
                         self.circuit_breaker.record_success()
                         return kline
                 except Exception as e:
-                    logger.warning(f"Failed to get real K-line for {code}: {e}, falling back to mock")
+                    if not _is_transient_network_error(e):
+                        logger.warning(f"Failed to get real K-line for {code}: {e}, falling back to mock")
 
             # Fall back to mock data (always succeeds)
             self.circuit_breaker.record_success()
@@ -1051,7 +1074,8 @@ class AkShareDataSource(BaseDataSource):
 
                 return items
             except Exception as e:
-                logger.debug(f"Failed to fetch K-line: {e}")
+                if not _is_transient_network_error(e):
+                    logger.debug(f"Failed to fetch K-line: {e}")
                 return []
 
         return await loop.run_in_executor(None, fetch_kline)
@@ -1121,7 +1145,10 @@ class AkShareDataSource(BaseDataSource):
                     logger.warning("No data from AkShare, using mock data")
                     return MOCK_STOCKS
             except Exception as e:
-                logger.warning(f"Failed to fetch stock list from AkShare: {e}, using mock data")
+                if not _is_transient_network_error(e):
+                    logger.warning(f"Failed to fetch stock list from AkShare: {e}, using mock data")
+                else:
+                    logger.debug("Network issue fetching stock list, using mock data")
                 return MOCK_STOCKS
 
         except ImportError:
